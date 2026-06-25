@@ -1,5 +1,8 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
+const TEXT_MODEL = "gemini-3-flash-preview";
+const IMAGE_MODEL = "gemini-2.5-flash-image";
+
 export interface AIUpdate {
   title: string;
   summary: string;
@@ -134,27 +137,22 @@ export async function fetchLatestAINews(_force: boolean = false): Promise<AIUpda
     });
 
     const response = await getAIClient().models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `Find and summarize the 5 most important recent artificial intelligence product launches, model releases, or industry developments. Today's date is ${today}. Use real source URLs.`,
+      model: TEXT_MODEL,
+      contents: `Find and summarize the 5 most important recent artificial intelligence product launches, model releases, or industry developments. Today's date is ${today}. Use real source URLs.
+
+Return only a valid JSON array. Do not include markdown, code fences, or commentary.
+Each array item must use this shape:
+{
+  "title": "string",
+  "summary": "string",
+  "importance": "low | medium | high",
+  "tags": ["string"],
+  "date": "string",
+  "url": "string"
+}`,
       config: {
-        systemInstruction: "Return only valid JSON. Do not include markdown or commentary.",
-        tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              summary: { type: Type.STRING },
-              importance: { type: Type.STRING, enum: ["low", "medium", "high"] },
-              tags: { type: Type.ARRAY, items: { type: Type.STRING } },
-              date: { type: Type.STRING },
-              url: { type: Type.STRING }
-            },
-            required: ["title", "summary", "importance", "tags", "date", "url"]
-          }
-        }
+        systemInstruction: "You are a factual AI news researcher. Use search grounding, then return only parseable JSON.",
+        tools: [{ googleSearch: {} }]
       }
     });
 
@@ -168,7 +166,7 @@ export async function fetchLatestAINews(_force: boolean = false): Promise<AIUpda
 
 export async function generateAIImage(prompt: string): Promise<string> {
   const response = await getAIClient().models.generateContent({
-    model: "gemini-2.5-flash-image",
+    model: IMAGE_MODEL,
     contents: {
       parts: [
         {
@@ -212,7 +210,7 @@ export async function generateFacebookPost(
 
   try {
     const response = await getAIClient().models.generateContent({
-      model: "gemini-2.5-flash",
+      model: TEXT_MODEL,
       contents: `Topic: ${topic}
 ${context ? `Context/Ground Truth: ${context}` : ""}
 Tone: ${toneGuide[tone]}
