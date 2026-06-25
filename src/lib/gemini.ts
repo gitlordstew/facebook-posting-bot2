@@ -1,7 +1,9 @@
+import { GoogleGenAI, Type } from "@google/genai";
+
 export interface AIUpdate {
   title: string;
   summary: string;
-  importance: 'low' | 'medium' | 'high';
+  importance: "low" | "medium" | "high";
   tags: string[];
   date: string;
   url: string;
@@ -57,56 +59,184 @@ export const FALLBACK_AI_NEWS: AIUpdate[] = [
   }
 ];
 
-export async function fetchLatestAINews(force: boolean = false): Promise<AIUpdate[]> {
+let aiClient: GoogleGenAI | null = null;
+
+function getAIClient() {
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is missing. Add it in Vercel and redeploy.");
+  }
+
+  if (!aiClient) {
+    aiClient = new GoogleGenAI({ apiKey });
+  }
+
+  return aiClient;
+}
+
+function parseJsonResponse<T>(text: string | undefined, fallback: T): T {
+  if (!text) {
+    return fallback;
+  }
+
+  const cleaned = text
+    .trim()
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "");
+
   try {
-    const url = force ? "/api/news?force=true" : "/api/news";
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch latest news: ${response.statusText}`);
-    }
-    const data = await response.json();
-    return data as AIUpdate[];
+    return JSON.parse(cleaned) as T;
   } catch (error) {
-    console.error("Error calling /api/news API, falling back:", error);
+    console.error("Gemini returned non-JSON text:", cleaned, error);
+    return fallback;
+  }
+}
+
+function generatePostLocalFallback(topic: string, tone: string, url?: string, context?: string): GeneratedPost {
+  const coreMessage = context ? context.trim() : `The latest advancements and integration of "${topic}" are shaping the future of technology.`;
+  const cleanTopic = topic.replace(/[#*]/g, "").trim();
+  const briefSubject = cleanTopic.split(/\s+/).slice(0, 4).join(" ");
+
+  let title = `Update: ${briefSubject}`;
+  let content = `${cleanTopic} represents a notable leap forward in technology.\n\n${coreMessage}`;
+  let suggestedImagePrompt = `Professional technological digital art showcasing ${cleanTopic}, neural network diagrams, modern clean workspace, high-fidelity details, 16:9 aspect ratio`;
+
+  if (tone === "professional") {
+    title = `The Strategic Impact of ${briefSubject}`;
+    content = `${coreMessage}\n\nThis development matters for teams building practical AI workflows, especially where automation, context, and trust need to work together.`;
+  } else if (tone === "minimalist") {
+    title = `${briefSubject}.`;
+    content = `${cleanTopic} is officially here.\n\n${coreMessage.slice(0, 220)}`;
+  } else if (tone === "analytical") {
+    title = `Analysis: ${briefSubject}`;
+    content = `The key signal: ${coreMessage}\n\nThe practical question now is how teams turn this capability into reliable workflows without adding unnecessary operational complexity.`;
+  }
+
+  if (cleanTopic.toLowerCase().includes("google") || cleanTopic.toLowerCase().includes("gemini")) {
+    suggestedImagePrompt = `Futuristic abstract Google Gemini neural core with floating Google color light flows, clean minimal design, professional digital art, 16:9`;
+  }
+
+  if (url) {
+    content += `\n\nSee more: ${url}`;
+  }
+
+  return { title, content, suggestedImagePrompt };
+}
+
+export async function fetchLatestAINews(_force: boolean = false): Promise<AIUpdate[]> {
+  try {
+    const today = new Date().toLocaleDateString("en-US", {
+      month: "long",
+      day: "numeric",
+      year: "numeric"
+    });
+
+    const response = await getAIClient().models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `Find and summarize the 5 most important recent artificial intelligence product launches, model releases, or industry developments. Today's date is ${today}. Use real source URLs.`,
+      config: {
+        systemInstruction: "Return only valid JSON. Do not include markdown or commentary.",
+        tools: [{ googleSearch: {} }],
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              summary: { type: Type.STRING },
+              importance: { type: Type.STRING, enum: ["low", "medium", "high"] },
+              tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+              date: { type: Type.STRING },
+              url: { type: Type.STRING }
+            },
+            required: ["title", "summary", "importance", "tags", "date", "url"]
+          }
+        }
+      }
+    });
+
+    const news = parseJsonResponse<AIUpdate[]>(response.text, FALLBACK_AI_NEWS);
+    return Array.isArray(news) && news.length > 0 ? news : FALLBACK_AI_NEWS;
+  } catch (error) {
+    console.error("Gemini news generation failed, falling back:", error);
     return FALLBACK_AI_NEWS;
   }
 }
 
 export async function generateAIImage(prompt: string): Promise<string> {
-  const response = await fetch("/api/generate-image", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  const response = await getAIClient().models.generateContent({
+    model: "gemini-2.5-flash-image",
+    contents: {
+      parts: [
+        {
+          text: `Create a professional, high-quality, 16:9 social media image about artificial intelligence: ${prompt}`
+        }
+      ]
     },
-    body: JSON.stringify({ prompt })
+    config: {
+      imageConfig: {
+        aspectRatio: "16:9"
+      }
+    }
   });
 
-  if (!response.ok) {
-    throw new Error(`Failed to generate image: ${response.statusText}`);
+  const parts = response.candidates?.[0]?.content?.parts || [];
+  const imagePart = parts.find((part) => part.inlineData?.data);
+
+  if (!imagePart?.inlineData?.data) {
+    throw new Error("Gemini did not return image data.");
   }
 
-  const data = await response.json();
-  return data.imageUrl;
+  return `data:${imagePart.inlineData.mimeType || "image/png"};base64,${imagePart.inlineData.data}`;
 }
 
 export async function generateFacebookPost(
-  topic: string, 
-  tone: 'professional' | 'enthusiastic' | 'informative' | 'minimalist' | 'visionary' | 'analytical',
+  topic: string,
+  tone: "professional" | "enthusiastic" | "informative" | "minimalist" | "visionary" | "analytical",
   sourceUrl?: string,
   context?: string
 ): Promise<GeneratedPost> {
-  const response = await fetch("/api/generate-post", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ topic, tone, url: sourceUrl, context })
-  });
+  const toneGuide = {
+    professional: "Authoritative, industry-focused, polished language, and insightful.",
+    enthusiastic: "High energy, excited, clear, and social-media friendly.",
+    informative: "Clear, structured, educational, and factual.",
+    minimalist: "Short, punchy, one or two sentences, high impact.",
+    visionary: "Futuristic and thoughtful, focusing on long-term impact.",
+    analytical: "Critical, data-driven, examining limitations and practical use cases."
+  };
 
-  if (!response.ok) {
-    throw new Error(`Failed to generate post: ${response.statusText}`);
+  const fallback = generatePostLocalFallback(topic, tone, sourceUrl, context);
+
+  try {
+    const response = await getAIClient().models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `Topic: ${topic}
+${context ? `Context/Ground Truth: ${context}` : ""}
+Tone: ${toneGuide[tone]}
+
+Generate a compelling Facebook post summarizing this AI development.
+Use only the provided facts and context.
+${sourceUrl ? `The post content must end with this exact final line: See more: ${sourceUrl}` : "Do not include hashtags at the end."}`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            content: { type: Type.STRING },
+            suggestedImagePrompt: { type: Type.STRING }
+          },
+          required: ["title", "content", "suggestedImagePrompt"]
+        }
+      }
+    });
+
+    return parseJsonResponse<GeneratedPost>(response.text, fallback);
+  } catch (error) {
+    console.error("Gemini post generation failed, falling back:", error);
+    return fallback;
   }
-
-  const data = await response.json();
-  return data as GeneratedPost;
 }
