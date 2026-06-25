@@ -50,7 +50,7 @@ export default function App() {
         setSelectedTopic(updates[0]);
       }
     } catch (error) {
-      console.error(error);
+      console.warn("News refresh failed. Keeping the current fallback feed.", error);
     } finally {
       setLoadingNews(false);
     }

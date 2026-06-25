@@ -2,6 +2,11 @@ import { GoogleGenAI, Type } from "@google/genai";
 
 const TEXT_MODEL = "gemini-3-flash-preview";
 const IMAGE_MODEL = "gemini-2.5-flash-image";
+const NEWS_CACHE_KEY = "feedgen-ai-news-cache";
+const NEWS_CACHE_TTL_MS = 30 * 60 * 1000;
+const NEWS_RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000;
+
+let newsRateLimitedUntil = 0;
 
 export interface AIUpdate {
   title: string;
@@ -97,6 +102,37 @@ function parseJsonResponse<T>(text: string | undefined, fallback: T): T {
   }
 }
 
+function isQuotaError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("429") || message.toLowerCase().includes("quota") || message.toLowerCase().includes("rate limit");
+}
+
+function readCachedNews() {
+  try {
+    const raw = window.localStorage.getItem(NEWS_CACHE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as { savedAt: number; news: AIUpdate[] };
+    if (!Array.isArray(parsed.news) || Date.now() - parsed.savedAt > NEWS_CACHE_TTL_MS) {
+      return null;
+    }
+
+    return parsed.news;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedNews(news: AIUpdate[]) {
+  try {
+    window.localStorage.setItem(NEWS_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), news }));
+  } catch {
+    // Local storage can be blocked in some browser modes; the in-memory fallback still works.
+  }
+}
+
 function generatePostLocalFallback(topic: string, tone: string, url?: string, context?: string): GeneratedPost {
   const coreMessage = context ? context.trim() : `The latest advancements and integration of "${topic}" are shaping the future of technology.`;
   const cleanTopic = topic.replace(/[#*]/g, "").trim();
@@ -129,6 +165,15 @@ function generatePostLocalFallback(topic: string, tone: string, url?: string, co
 }
 
 export async function fetchLatestAINews(_force: boolean = false): Promise<AIUpdate[]> {
+  const cachedNews = readCachedNews();
+  if (cachedNews && (!_force || Date.now() < newsRateLimitedUntil)) {
+    return cachedNews;
+  }
+
+  if (Date.now() < newsRateLimitedUntil) {
+    return cachedNews || FALLBACK_AI_NEWS;
+  }
+
   try {
     const today = new Date().toLocaleDateString("en-US", {
       month: "long",
@@ -157,10 +202,18 @@ Each array item must use this shape:
     });
 
     const news = parseJsonResponse<AIUpdate[]>(response.text, FALLBACK_AI_NEWS);
-    return Array.isArray(news) && news.length > 0 ? news : FALLBACK_AI_NEWS;
+    const usableNews = Array.isArray(news) && news.length > 0 ? news : FALLBACK_AI_NEWS;
+    writeCachedNews(usableNews);
+    return usableNews;
   } catch (error) {
-    console.error("Gemini news generation failed, falling back:", error);
-    return FALLBACK_AI_NEWS;
+    if (isQuotaError(error)) {
+      newsRateLimitedUntil = Date.now() + NEWS_RATE_LIMIT_COOLDOWN_MS;
+      console.warn("Gemini news quota is temporarily exhausted. Using cached or fallback news.");
+    } else {
+      console.warn("Gemini news generation failed. Using cached or fallback news.", error);
+    }
+
+    return cachedNews || FALLBACK_AI_NEWS;
   }
 }
 
