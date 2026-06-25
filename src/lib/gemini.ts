@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const TEXT_MODEL = "gemini-3-flash-preview";
+const TEXT_MODEL = "gemini-3-preview";
 const IMAGE_MODEL = "gemini-2.5-flash-image";
 
 export interface AIUpdate {
