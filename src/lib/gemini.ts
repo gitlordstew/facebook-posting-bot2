@@ -3,10 +3,11 @@ import { GoogleGenAI, Type } from "@google/genai";
 const TEXT_MODEL = "gemini-3-flash-preview";
 const IMAGE_MODEL = "gemini-2.5-flash-image";
 const NEWS_CACHE_KEY = "feedgen-ai-news-cache";
+const NEWS_RATE_LIMIT_KEY = "feedgen-ai-news-rate-limited-until";
 const NEWS_CACHE_TTL_MS = 30 * 60 * 1000;
 const NEWS_RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000;
 
-let newsRateLimitedUntil = 0;
+let newsRateLimitedUntil = readRateLimitedUntil();
 
 export interface AIUpdate {
   title: string;
@@ -133,6 +134,24 @@ function writeCachedNews(news: AIUpdate[]) {
   }
 }
 
+function readRateLimitedUntil() {
+  try {
+    return Number(window.localStorage.getItem(NEWS_RATE_LIMIT_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeRateLimitedUntil(timestamp: number) {
+  newsRateLimitedUntil = timestamp;
+
+  try {
+    window.localStorage.setItem(NEWS_RATE_LIMIT_KEY, String(timestamp));
+  } catch {
+    // Ignore storage failures; the in-memory cooldown still prevents repeat calls in this tab.
+  }
+}
+
 function generatePostLocalFallback(topic: string, tone: string, url?: string, context?: string): GeneratedPost {
   const coreMessage = context ? context.trim() : `The latest advancements and integration of "${topic}" are shaping the future of technology.`;
   const cleanTopic = topic.replace(/[#*]/g, "").trim();
@@ -204,10 +223,11 @@ Each array item must use this shape:
     const news = parseJsonResponse<AIUpdate[]>(response.text, FALLBACK_AI_NEWS);
     const usableNews = Array.isArray(news) && news.length > 0 ? news : FALLBACK_AI_NEWS;
     writeCachedNews(usableNews);
+    writeRateLimitedUntil(0);
     return usableNews;
   } catch (error) {
     if (isQuotaError(error)) {
-      newsRateLimitedUntil = Date.now() + NEWS_RATE_LIMIT_COOLDOWN_MS;
+      writeRateLimitedUntil(Date.now() + NEWS_RATE_LIMIT_COOLDOWN_MS);
       console.warn("Gemini news quota is temporarily exhausted. Using cached or fallback news.");
     } else {
       console.warn("Gemini news generation failed. Using cached or fallback news.", error);
